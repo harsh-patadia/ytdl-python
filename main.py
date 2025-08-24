@@ -26,51 +26,52 @@ def get_video_info(url):
             "length": yt.length,
             "views": yt.views,
             "description": yt.description,
-            "publish_date": yt.publish_date,
+            "publish_date": yt.publish_date.isoformat() if yt.publish_date else None,
         }
         return video_info, None
     except Exception as e:
         return None, str(e)
 
 def is_valid_youtube_url(url):
-    pattern = r"^(https?://)?(www\.)?youtube\.com/watch\?v=[\w-]+(&\S*)?$"
+    pattern = r"^(https?://)?(www\.)?(youtube\.com|youtu\.be)/watch\?v=[\w-]+(&\S*)?$"
     return re.match(pattern, url) is not None
 
-@app.route('/download/<resolution>', methods=['POST'])
-def download_by_resolution(resolution):
-    data = request.get_json()
-    url = data.get('url')
-    
-    if not url:
-        return jsonify({"error": "Missing 'url' parameter in the request body."}), 400
+# ✅ GET endpoint: /download?url=...&res=...
+@app.route('/download', methods=['GET'])
+def download_by_resolution():
+    url = request.args.get('url')
+    resolution = request.args.get('res')
+
+    if not url or not resolution:
+        return jsonify({"error": "Missing 'url' or 'res' query parameter."}), 400
 
     if not is_valid_youtube_url(url):
         return jsonify({"error": "Invalid YouTube URL."}), 400
-    
+
     success, error_message = download_video(url, resolution)
-    
+
     if success:
-        return jsonify({"message": f"Video with resolution {resolution} downloaded successfully."}), 200
+        return jsonify({"message": f"Video downloaded successfully in {resolution}."}), 200
     else:
         return jsonify({"error": error_message}), 500
 
-@app.route('/video_info', methods=['POST'])
+# ✅ GET endpoint: /get_info?url=...
+@app.route('/get_info', methods=['GET'])
 def video_info():
-    data = request.get_json()
-    url = data.get('url')
-    
+    url = request.args.get('url')
+
     if not url:
-        return jsonify({"error": "Missing 'url' parameter in the request body."}), 400
+        return jsonify({"error": "Missing 'url' query parameter."}), 400
 
     if not is_valid_youtube_url(url):
         return jsonify({"error": "Invalid YouTube URL."}), 400
-    
+
     video_info, error_message = get_video_info(url)
-    
+
     if video_info:
         return jsonify(video_info), 200
     else:
         return jsonify({"error": error_message}), 500
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True, host='0.0.0.0', port=5000)
