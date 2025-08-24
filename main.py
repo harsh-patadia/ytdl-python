@@ -3,50 +3,61 @@ from pytube import YouTube
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 import os
-from urllib.parse import urlparse, parse_qs, urlunparse
+from urllib.parse import urlparse, parse_qs
 
 app = FastAPI()
 
-def sanitize_youtube_url(url: str) -> str:
-    """Clean and convert YouTube Shorts URLs to regular watch URLs."""
-    try:
-        parsed = urlparse(url)
 
-        if 'shorts' in parsed.path:
-            # Convert /shorts/VIDEO_ID to /watch?v=VIDEO_ID
-            video_id = parsed.path.split('/shorts/')[-1]
-            return f"https://www.youtube.com/watch?v={video_id}"
+def extract_video_id(url: str) -> str:
+    """
+    Extract video ID from YouTube URL (works for shorts, youtu.be, watch, etc.)
+    """
+    parsed_url = urlparse(url)
 
-        # If it's already a watch link, strip unnecessary params
-        if parsed.path == '/watch':
-            query = parse_qs(parsed.query)
-            video_id = query.get('v', [None])[0]
-            if video_id:
-                return f"https://www.youtube.com/watch?v={video_id}"
+    # Handle youtu.be short links
+    if 'youtu.be' in parsed_url.netloc:
+        return parsed_url.path.lstrip('/')
 
-        return url  # fallback
-    except Exception:
-        return url
+    # Handle shorts
+    if 'shorts' in parsed_url.path:
+        return parsed_url.path.split('/shorts/')[-1].split('?')[0]
+
+    # Handle standard /watch?v=ID
+    if parsed_url.path == '/watch':
+        qs = parse_qs(parsed_url.query)
+        return qs.get('v', [None])[0]
+
+    # fallback: maybe already cleaned?
+    return None
+
+
+@app.get("/")
+def root():
+    return {"message": "YouTube Downloader API is running. Use /download?url=..."}
+
 
 @app.get("/download")
 def download_video(url: str = Query(..., description="YouTube video URL")):
     try:
-        cleaned_url = sanitize_youtube_url(url)
-        yt = YouTube(cleaned_url)
+        video_id = extract_video_id(url)
+        if not video_id:
+            raise ValueError("Invalid or unsupported YouTube URL format.")
+
+        clean_url = f"https://www.youtube.com/watch?v={video_id}"
+        yt = YouTube(clean_url)
         stream = yt.streams.get_highest_resolution()
 
-        output_path = "downloads"
-        os.makedirs(output_path, exist_ok=True)
-
-        file_path = stream.download(output_path=output_path)
+        output_dir = "downloads"
+        os.makedirs(output_dir, exist_ok=True)
+        file_path = stream.download(output_path=output_dir)
         filename = yt.title.replace(" ", "_") + ".mp4"
 
         return FileResponse(
             file_path,
             media_type="video/mp4",
             filename=filename,
-            background=BackgroundTask(lambda: os.remove(file_path))  # auto-delete
+            background=BackgroundTask(lambda: os.remove(file_path))  # auto-cleanup
         )
 
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to download video. Error: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Download failed: {str(e)}")
