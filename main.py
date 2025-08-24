@@ -1,88 +1,76 @@
-from fastapi import FastAPI, Query, HTTPException
-from fastapi.responses import FileResponse
-from starlette.background import BackgroundTask
+from flask import Flask, request, jsonify
 from pytube import YouTube
-import os
-from urllib.parse import urlparse, parse_qs
-import logging
+import re
 
-app = FastAPI()
+app = Flask(__name__)
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("yt-downloader")
-
-def clean_youtube_url(url: str) -> str:
-    logger.info(f"Raw URL input: {url}")
-
-    # Remove accidental 'l' prefix (common typo)
-    if url.startswith("lhttp"):
-        url = url[1:]
-
-    parsed = urlparse(url)
-
-    if parsed.scheme not in ['http', 'https']:
-        logger.warning("Invalid URL scheme.")
-        return None
-
-    netloc = parsed.netloc.lower()
-    path = parsed.path
-
-    # Handle youtu.be short links
-    if 'youtu.be' in netloc:
-        video_id = path.lstrip('/')
-        return f"https://www.youtube.com/watch?v={video_id}"
-
-    # Handle shorts
-    if 'shorts' in path:
-        try:
-            video_id = path.split('/shorts/')[-1].split('?')[0]
-            return f"https://www.youtube.com/watch?v={video_id}"
-        except IndexError:
-            logger.error("Could not extract video ID from shorts URL.")
-            return None
-
-    # Handle watch URL
-    if path == '/watch':
-        query = parse_qs(parsed.query)
-        video_id = query.get('v', [None])[0]
-        if video_id:
-            return f"https://www.youtube.com/watch?v={video_id}"
-
-    logger.warning("Unsupported or malformed URL.")
-    return None
-
-
-@app.get("/")
-def root():
-    return {"message": "YouTube Downloader API is running. Use /download?url=..."}
-
-
-@app.get("/download")
-def download_video(url: str = Query(..., description="YouTube video URL")):
+def download_video(url, resolution):
     try:
-        cleaned_url = clean_youtube_url(url)
-        if not cleaned_url:
-            raise HTTPException(status_code=400, detail="Invalid or unsupported YouTube URL.")
-
-        logger.info(f"Cleaned URL: {cleaned_url}")
-
-        yt = YouTube(cleaned_url)
-        stream = yt.streams.get_highest_resolution()
-
-        output_dir = "downloads"
-        os.makedirs(output_dir, exist_ok=True)
-        file_path = stream.download(output_path=output_dir)
-        filename = yt.title.replace(" ", "_") + ".mp4"
-
-        logger.info(f"Video downloaded: {filename}")
-
-        return FileResponse(
-            file_path,
-            media_type="video/mp4",
-            filename=filename,
-            background=BackgroundTask(lambda: os.remove(file_path))
-        )
-
+        yt = YouTube(url)
+        stream = yt.streams.filter(progressive=True, file_extension='mp4', resolution=resolution).first()
+        if stream:
+            stream.download()
+            return True, None
+        else:
+            return False, "Video with the specified resolution not found."
     except Exception as e:
-        logger.error(f"Download failed: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=f"Download failed: {str(e)}")
+        return False, str(e)
+
+def get_video_info(url):
+    try:
+        yt = YouTube(url)
+        stream = yt.streams.first()
+        video_info = {
+            "title": yt.title,
+            "author": yt.author,
+            "length": yt.length,
+            "views": yt.views,
+            "description": yt.description,
+            "publish_date": yt.publish_date,
+        }
+        return video_info, None
+    except Exception as e:
+        return None, str(e)
+
+def is_valid_youtube_url(url):
+    pattern = r"^(https?://)?(www\.)?youtube\.com/watch\?v=[\w-]+(&\S*)?$"
+    return re.match(pattern, url) is not None
+
+@app.route('/download/<resolution>', methods=['POST'])
+def download_by_resolution(resolution):
+    data = request.get_json()
+    url = data.get('url')
+    
+    if not url:
+        return jsonify({"error": "Missing 'url' parameter in the request body."}), 400
+
+    if not is_valid_youtube_url(url):
+        return jsonify({"error": "Invalid YouTube URL."}), 400
+    
+    success, error_message = download_video(url, resolution)
+    
+    if success:
+        return jsonify({"message": f"Video with resolution {resolution} downloaded successfully."}), 200
+    else:
+        return jsonify({"error": error_message}), 500
+
+@app.route('/video_info', methods=['POST'])
+def video_info():
+    data = request.get_json()
+    url = data.get('url')
+    
+    if not url:
+        return jsonify({"error": "Missing 'url' parameter in the request body."}), 400
+
+    if not is_valid_youtube_url(url):
+        return jsonify({"error": "Invalid YouTube URL."}), 400
+    
+    video_info, error_message = get_video_info(url)
+    
+    if video_info:
+        return jsonify(video_info), 200
+    else:
+        return jsonify({"error": error_message}), 500
+
+if __name__ == '__main__':
+    app.run(debug=True)
